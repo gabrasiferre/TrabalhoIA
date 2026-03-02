@@ -24,6 +24,7 @@ def gerar_dados_simulados():
     n_samples = 200
     data = {
         'track_name': [f'Música Simulada {i}' for i in range(1, n_samples+1)],
+        'artist_name': [f'Artista Simulado {i}' for i in range(1, n_samples+1)],
         'danceability': np.random.rand(n_samples),
         'energy': np.random.rand(n_samples),
         'acousticness': np.random.rand(n_samples),
@@ -53,6 +54,13 @@ if uploaded_file is not None:
         name_col = 'track_name'
     else:
         df_raw[name_col] = df_raw[name_col].astype(str).fillna("Desconhecida")
+        
+    possible_artist_cols = ["artist"]
+    artist_col = next((col for col in possible_artist_cols if col in df_raw.columns), None)
+
+    if artist_col is None:
+        df_raw["artist"] = "Desconhecido"
+        artist_col = "artist"
 
     target_features = ['danceability', 'energy', 'acousticness', 'valence', 'loudness']
     
@@ -69,6 +77,20 @@ else:
     df = gerar_dados_simulados()
     features_existentes = ['danceability', 'energy', 'acousticness', 'valence', 'loudness']
     name_col = 'track_name'
+    artist_col = 'artist_name'
+
+if "genre" in df.columns:
+    df["genre"] = df["genre"].fillna("").astype(str)
+
+    df_exploded = df.assign(
+        genre=df["genre"].str.split(",")
+    ).explode("genre")
+
+    df_exploded["genre"] = df_exploded["genre"].str.strip()
+    df_exploded = df_exploded[df_exploded["genre"] != ""]
+else:
+    df_exploded = df.copy()
+    df_exploded["genre"] = "unknown"
 
 n_clusters = st.sidebar.slider("Número de Clusters (K)", 2, 8, 4)
 
@@ -81,8 +103,13 @@ clusters = kmeans.fit_predict(X_scaled)
 
 df['Cluster'] = clusters
 score = silhouette_score(X_scaled, clusters)
+df_exploded = df_exploded.merge(
+    df[[name_col, "Cluster"]],
+    on=name_col,
+    how="left"
+)
 
-tab1, tab2, tab3 = st.tabs(["📊 Visualização", "🧠 Interpretação", "🔮 Predição"])
+tab1,tab2, tab3, tab4 = st.tabs(["📊 Visualização", "📄 Dados do Gráfico", "🧠 Interpretação", "🔮 Predição"])
 
 with tab1:
     st.header("Mapa de Músicas (PCA)")
@@ -102,7 +129,7 @@ with tab1:
         y='y_pca', 
         color='Cluster',
         hover_name=name_col,
-        hover_data=features_existentes, 
+        hover_data=[artist_col]+features_existentes, 
         title="Distribuição das Músicas",
         template="plotly_dark",
         height=600
@@ -111,10 +138,24 @@ with tab1:
     
     st.plotly_chart(fig_pca, use_container_width=True)
     st.caption("Passe o mouse sobre os pontos para ver o nome da música e seus atributos.")
+    st.subheader("📊 Percentual de Gêneros por Cluster")
+    genre_cluster_pct = (
+        pd.crosstab(df_exploded["genre"], df_exploded["Cluster"], normalize="columns") * 100
+    ).round(2)
+    st.dataframe(genre_cluster_pct, use_container_width=True)
 
 with tab2:
+    st.header("📄 Dados do Gráfico (PCA + Clusters)")
+    st.dataframe(
+        df_viz[
+            [name_col,artist_col,'Cluster', 'x_pca', 'y_pca'] + features_existentes
+        ],
+        use_container_width=True
+    )
+    st.caption("Esses são os dados transformados que alimentam o gráfico de PCA no Tab 1.")
+
+with tab3:
     st.header("Perfil dos Clusters")
-    
     numeric_cols = features_existentes + ['Cluster']
     avg_df = df[numeric_cols].groupby('Cluster').mean().reset_index()
     
@@ -133,8 +174,24 @@ with tab2:
         
         if i % 2 == 0: col1.plotly_chart(fig, use_container_width=True)
         else: col2.plotly_chart(fig, use_container_width=True)
+        
+    st.subheader("🎯 Gênero Predominante por Cluster")
+    top_n = 2
+    results = []
+    for cluster in genre_cluster_pct.columns:
+        sorted_genres = genre_cluster_pct[cluster].sort_values(ascending=False)
+        top_genres = sorted_genres.head(top_n)
+        for rank, (genre, pct) in enumerate(top_genres.items(), start=1):
+            results.append({
+                "Cluster": cluster,
+                "Rank": rank,
+                "Gênero": genre,
+                "Percentual (%)": pct
+            })
+    top_genres_df = pd.DataFrame(results)
+    st.dataframe(top_genres_df, use_container_width=True)
 
-with tab3:
+with tab4:
     st.header("Simulador")
     input_vals = []
     cols_input = st.columns(len(features_existentes))
